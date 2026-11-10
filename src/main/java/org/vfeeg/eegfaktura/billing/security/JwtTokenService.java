@@ -41,23 +41,52 @@ public class JwtTokenService {
             JSONObject payload = new JSONObject(decode(decodedJWT.getPayload()));
 
             ArrayList<Authority> authorities = new ArrayList<>();
-            JSONArray authorityJSONArray = payload.getJSONArray("tenant");
-            for (var i=0; i<authorityJSONArray.length(); i++) {
-                authorities.add(new Authority(authorityJSONArray.getString(i)));
+            // tenant und access_groups koennen fehlen (z. B. Betreiber-Konten ohne eigene
+            // Gemeinschaft); dann bleibt die Liste leer statt das ganze Token zu verwerfen.
+            JSONArray authorityJSONArray = payload.optJSONArray("tenant");
+            if (authorityJSONArray != null) {
+                for (var i=0; i<authorityJSONArray.length(); i++) {
+                    authorities.add(new Authority(authorityJSONArray.getString(i)));
+                }
             }
-            JSONArray accessGroupJSONArray = payload.getJSONArray("access_groups");
-            for (var i=0; i<accessGroupJSONArray.length(); i++) {
-                var access_group = accessGroupJSONArray.getString(i).replace("/", "");
-                authorities.add(new Authority("ROLE_"+access_group));
+            JSONArray accessGroupJSONArray = payload.optJSONArray("access_groups");
+            if (accessGroupJSONArray != null) {
+                for (var i=0; i<accessGroupJSONArray.length(); i++) {
+                    var access_group = accessGroupJSONArray.getString(i).replace("/", "");
+                    authorities.add(new Authority("ROLE_"+access_group));
+                }
             }
 
             String username = payload.getString("preferred_username");
 
-            jwtAuthentication = new JwtAuthentication(username, authorities);
+            // email: Empfaenger der Testmail "an mich" (Mail-Texte); fehlt der Claim, bleibt er leer.
+            String email = payload.optString("email", null);
+
+            // azp: the Keycloak client that requested the token, only for the log (client.id)
+            String clientId = payload.optString("azp", null);
+
+            jwtAuthentication = new JwtAuthentication(username, authorities, hasRealmRole(payload, "superuser"), email,
+                    clientId);
         } catch (Exception e) {
-            log.warn("Failed to validate JWT token: {}", e.getMessage(), e);
+            // expired or invalid tokens are routine (the access line shows the refusal): one debug line, type only -
+            // the message of a decode error can quote the token's decoded content
+            log.atDebug().addKeyValue("error.type", e.getClass().getName()).log("Token rejected");
         }
         return jwtAuthentication;
+    }
+
+    static boolean hasRealmRole(final JSONObject payload, final String role) {
+        JSONObject realmAccess = payload.optJSONObject("realm_access");
+        JSONArray roles = realmAccess == null ? null : realmAccess.optJSONArray("roles");
+        if (roles == null) {
+            return false;
+        }
+        for (var i = 0; i < roles.length(); i++) {
+            if (role.equals(roles.optString(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String decode(String encodedString) {

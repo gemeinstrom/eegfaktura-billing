@@ -1,5 +1,6 @@
 package org.vfeeg.eegfaktura.billing.domain;
 
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import lombok.*;
@@ -86,12 +87,52 @@ public class BillingMasterdata {
     private BigDecimal tariffMeteringPointVat; // USt für Zaehlpunktgebuehr (EEG->Teilnehmer)
     private String tariffMeteringPointFeeText;
 
+    // ZVT (zeitvariabler Tarif): Basispreis bleibt tariffWorkingFeePerConsumedkwh /
+    // tariffCreditAmountPerProducedkwh; bis zu zwei Zeitfenster mit eigenem Preis.
+    // Quelle: backend-View base.billing_masterdata (from/to als 'HH24:MI'-Text).
+    // Explizite Spaltennamen, unabhaengig von der Naming-Strategie: bis Hibernate 6 kam
+    // nach einer Ziffer kein Unterstrich (tariffTime1Active -> tariff_time1active), seit
+    // Hibernate 7 schon (tariff_time1_active, siehe BillingDocument).
+    private Boolean tariffUseTimeTariff;
+    @Column(name = "tariff_time1_active")
+    private Boolean tariffTime1Active;
+    @Column(name = "tariff_time1_name")
+    private String tariffTime1Name;
+    @Column(name = "tariff_time1_from")
+    private String tariffTime1From;
+    @Column(name = "tariff_time1_to")
+    private String tariffTime1To;
+    @Column(name = "tariff_time1_cent_per_kwh")
+    private BigDecimal tariffTime1CentPerKwh;
+    @Column(name = "tariff_time2_active")
+    private Boolean tariffTime2Active;
+    @Column(name = "tariff_time2_name")
+    private String tariffTime2Name;
+    @Column(name = "tariff_time2_from")
+    private String tariffTime2From;
+    @Column(name = "tariff_time2_to")
+    private String tariffTime2To;
+    @Column(name = "tariff_time2_cent_per_kwh")
+    private BigDecimal tariffTime2CentPerKwh;
+
+    // Beitrittsgebuehr aus dem EEG-Tarif des Mitglieds (backend-View, Ersatzwert 0/false)
+    private BigDecimal tariffJoiningFee;
+    private Boolean tariffJoiningFeeUseVat;
+    private BigDecimal tariffJoiningFeeVatInPercent;
+
+    // Typ der Gemeinschaft (base.eeg.area: LOCAL, REGIONAL, BEG, GEA, P2P, EVA), platform#229
+    private String eegArea;
+
     public Boolean getTariffUseVat() {
         return Objects.requireNonNullElse(tariffUseVat, Boolean.FALSE);
     }
 
     public Boolean getTariffParticipantFeeUseVat() {
         return Objects.requireNonNullElse(tariffParticipantFeeUseVat, Boolean.FALSE);
+    }
+
+    public Boolean getTariffJoiningFeeUseVat() {
+        return Objects.requireNonNullElse(tariffJoiningFeeUseVat, Boolean.FALSE);
     }
 
     public Boolean getEecSubjectToVat() {

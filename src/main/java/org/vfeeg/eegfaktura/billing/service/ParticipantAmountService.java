@@ -4,6 +4,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.vfeeg.eegfaktura.billing.domain.BillingDocument;
 import org.vfeeg.eegfaktura.billing.domain.BillingDocumentItem;
+import org.vfeeg.eegfaktura.billing.domain.BillingDocumentItemType;
 import org.vfeeg.eegfaktura.billing.domain.BillingRun;
 import org.vfeeg.eegfaktura.billing.domain.MeteringPointType;
 import org.vfeeg.eegfaktura.billing.model.BillingDocumentFileDTO;
@@ -16,7 +17,9 @@ import org.vfeeg.eegfaktura.billing.util.NotFoundException;
 
 import java.math.BigDecimal;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -43,21 +46,39 @@ public class ParticipantAmountService {
             , BillingDocument billingDocument
             , List<BillingDocumentItem> billingDocumentItems) {
 
-        billingDocumentItems.stream().filter(billingDocumentItem -> billingDocumentItem.getMeteringPointId()!=null)
+        // Energie-Items je Zaehlpunkt aggregieren: seit ZVT kann ein ZP mehrere
+        // Positionen (Basis + Zeitfenster) haben -> genau EIN MeteringPoint-Eintrag
+        // je ZP mit der Summe. Zaehlpunktgebuehren tragen seit ZVT ebenfalls eine
+        // meteringPointId (PDF-Gruppierung) und bleiben hier wie bisher aussen vor.
+        Map<String, MeteringPoint> meteringPointAmounts = new LinkedHashMap<>();
+        billingDocumentItems.stream().filter(billingDocumentItem -> billingDocumentItem.getMeteringPointId()!=null
+                        && !billingDocumentItem.getText().startsWith(BillingService.ZAEHLPUNKTGEBUEHR_TEXT))
                 .forEach(billingDocumentItem -> {
-                    MeteringPoint meteringPoint = new MeteringPoint();
-                    meteringPoint.setId(billingDocumentItem.getMeteringPointId());
-                    meteringPoint.setAmount(billingDocumentItem.getMeteringPointType()== MeteringPointType.CONSUMER ?
-                            billingDocumentItem.getGrossValue() : billingDocumentItem.getGrossValue().negate());
-                    participantAmount.getMeteringPoints().add(meteringPoint);
+                    MeteringPoint meteringPoint = meteringPointAmounts.computeIfAbsent(
+                            billingDocumentItem.getMeteringPointId(), id -> {
+                                MeteringPoint mp = new MeteringPoint();
+                                mp.setId(id);
+                                mp.setAmount(BigDecimal.ZERO);
+                                return mp;
+                            });
+                    meteringPoint.setAmount(meteringPoint.getAmount().add(
+                            billingDocumentItem.getMeteringPointType()== MeteringPointType.CONSUMER ?
+                            billingDocumentItem.getGrossValue() : billingDocumentItem.getGrossValue().negate()));
                     participantAmount.setAmount(participantAmount.getAmount().add(billingDocumentItem.getGrossValue()));
                 });
+        participantAmount.getMeteringPoints().addAll(meteringPointAmounts.values());
 
         // Jenes Item ohne einer MeteringPointId UND nicht mit dem Text "Zaehlpunktgebuehr" beginnt
-        // ist (aktuell) die Mitgliedsgebühr
+        // ist (aktuell) die Mitgliedsgebühr - ausser der Beitrittsgebuehr (eigenes Feld)
         billingDocumentItems.stream().filter(billingDocumentItem -> billingDocumentItem.getMeteringPointId()==null
+                && billingDocumentItem.getItemType() != BillingDocumentItemType.JOINING_FEE
                 && !billingDocumentItem.getText().startsWith(BillingService.ZAEHLPUNKTGEBUEHR_TEXT))
                 .forEach(billingDocumentItem -> participantAmount.setParticipantFee(billingDocumentItem.getGrossValue()));
+
+        billingDocumentItems.stream()
+                .filter(billingDocumentItem -> billingDocumentItem.getItemType() == BillingDocumentItemType.JOINING_FEE)
+                .forEach(billingDocumentItem -> participantAmount.setJoiningFee(
+                        participantAmount.getJoiningFee().add(billingDocumentItem.getGrossValue())));
 
         // Jene Items die mit dem Text "Zaehlpunktgebuehr" beginnen, sind eben solche
         // und werden hier aufsummiert
@@ -67,8 +88,9 @@ public class ParticipantAmountService {
                             .reduce(BigDecimal.ZERO, BigDecimal::add);
         participantAmount.setMeteringPointFeeSum(participantAmount.getMeteringPointFeeSum().add(meteringPointFeeSum));
 
-        List<BillingDocumentFileDTO> billingDocumentList = billingDocumentFileService
-                .findByBillingDocumentId(billingDocument.getId());
+        // a document with amount 0 is never saved: it has no id and no file (known-errors #13)
+        List<BillingDocumentFileDTO> billingDocumentList = billingDocument.getId() == null ? List.of()
+                : billingDocumentFileService.findByBillingDocumentId(billingDocument.getId());
 
         if (!billingDocumentList.isEmpty()) {
             participantAmount.getBillingDocumentFileDTOs().add(billingDocumentList.get(0));

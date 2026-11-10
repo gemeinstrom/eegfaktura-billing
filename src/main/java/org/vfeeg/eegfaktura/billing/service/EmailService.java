@@ -8,6 +8,7 @@ import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MimeTypeUtils;
+import org.springframework.web.util.HtmlUtils;
 import org.vfeeg.eegfaktura.billing.util.EmailAddressUtil;
 
 import java.util.ArrayList;
@@ -37,6 +38,17 @@ public class EmailService {
     public List<String> sendEmail(
             String from , String to, String cc, String subject, String htmlBody,
             Map<String, byte[]> attachments) throws MessagingException {
+        return sendEmail(from, to, cc, subject, htmlBody, List.of(), attachments);
+    }
+
+    /** An image embedded in the HTML part, referenced there as {@code cid:<contentId>}. */
+    public record InlineImage(String contentId, byte[] data, String mimeType) {
+    }
+
+    /** As above, plus inline images of any type (e.g. the images of an EEG mail text). */
+    public List<String> sendEmail(
+            String from , String to, String cc, String subject, String htmlBody,
+            List<InlineImage> inlineImages, Map<String, byte[]> attachments) throws MessagingException {
 
         List<String> rejected = new ArrayList<>();
 
@@ -44,7 +56,8 @@ public class EmailService {
         List<String> validTo = toParts.stream().filter(EmailAddressUtil::isValid).toList();
         rejected.addAll(toParts.stream().filter(p -> !EmailAddressUtil.isValid(p)).toList());
         if (validTo.isEmpty()) {
-            throw new MessagingException("invalid email (" + to + ")");
+            // without the address: the message reaches the log, the send protocol names the member
+            throw new MessagingException("invalid email (no valid recipient address)");
         }
 
         List<String> ccParts = EmailAddressUtil.normalize(cc);
@@ -62,7 +75,13 @@ public class EmailService {
             // message.setHeader("return-path", ccArray[0]);
         }
         helper.setSubject(subject);
-        helper.setText(htmlBody, true);
+        // multipart/alternative: a plain-text part next to the HTML. A lone
+        // text/html body is a notable spam signal; the text is derived from
+        // the rendered HTML (no separate template to maintain).
+        helper.setText(htmlToPlainText(htmlBody), htmlBody);
+        for (InlineImage image : inlineImages) {
+            helper.addInline(image.contentId(), new ByteArrayDataSource(image.data(), image.mimeType()));
+        }
         for (Map.Entry<String, byte[]> attachment : attachments.entrySet()) {
             if (attachment.getKey().contains(".png")) {
                 helper.addInline(attachment.getKey(), new ByteArrayDataSource(attachment.getValue(),
@@ -72,8 +91,31 @@ public class EmailService {
                         "application/pdf"));
             }
         }
+        // Mark system-generated mail so filters don't treat it like bulk/personal mail.
+        message.setHeader("Auto-Submitted", "auto-generated");
         emailSender.send(message);
 
         return rejected;
+    }
+
+    /**
+     * Derives a plain-text alternative from the rendered HTML body. Good enough
+     * for readability alongside the HTML part — not a full HTML renderer.
+     */
+    static String htmlToPlainText(String html) {
+        if (html == null) {
+            return "";
+        }
+        String t = html
+                .replaceAll("(?is)<(script|style)[^>]*>.*?</\\1>", "")
+                .replaceAll("(?i)<br\\s*/?>", "\n")
+                .replaceAll("(?i)</(p|div|tr|li|h[1-6]|table)>", "\n")
+                .replaceAll("(?s)<[^>]+>", "");
+        // all named and numeric entities (the sanitizer writes e.g. &#64; and &#43;)
+        t = HtmlUtils.htmlUnescape(t).replace(' ', ' ');
+        return t.replaceAll("[ \\t]+", " ")
+                .replaceAll("(?m)^[ \\t]+", "")
+                .replaceAll("\\n{3,}", "\n\n")
+                .trim();
     }
 }
